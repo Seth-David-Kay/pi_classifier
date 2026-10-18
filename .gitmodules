@@ -1,0 +1,6 @@
+[submodule "small_tui"]
+	path = small_tui
+	url = git@github.com:Seth-David-Kay/small_tui.git
+[submodule "base"]
+	path = base
+	url = git@github.com:Seth-David-Kay/base.git
