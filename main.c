@@ -13,21 +13,21 @@ structdef(Drawing){
 Drawing paint(void);
 
 int main(void){
-	Drawing character = paint();
-	printf("int pixels[%d][%d] = {\n", N, N);
-    for (int y = 0; y < N; y++) {
-        printf("    {");
-        for (int x = 0; x < N; x++)
-            printf("%d%s", character.pixels[y][x] ? 1 : 0, x < N - 1 ? ", " : "");
-        printf("}%s\n", y < N - 1 ? "," : "");
+    for (int i = 0; i < 1; i++){
+    	Drawing character = paint();
+    	printf("int pixels[%d][%d] = {\n", N, N);
+        for (int y = 0; y < N; y++) {
+            printf("    {");
+            for (int x = 0; x < N; x++)
+                printf("%d%s", character.pixels[y][x] ? 1 : 0, x < N - 1 ? ", " : "");
+            printf("}%s\n", y < N - 1 ? "," : "");
+        }
     }
-    printf("};\n");
-    paint();
 }
 
 
 Drawing paint(void) {
-    bool grid[N][N] = {{false}};
+    Drawing drawing = {0};
     bool mode = true;
     int  last_x = -1, last_y = -1;
     uint64_t black = COLOR(C_RGB(0, 0, 0), C_RGB(0, 0, 0));
@@ -45,7 +45,7 @@ Drawing paint(void) {
                     int tx = (tui.event.x - r.x) / 2;
                     int ty = tui.event.y - r.y;
                     if (press) {
-                        mode   = !grid[ty][tx];
+                        mode   = !drawing.pixels[ty][tx];
                         last_x = tx;
                         last_y = ty;
                     }
@@ -55,7 +55,7 @@ Drawing paint(void) {
                     for (int i = 0; i <= steps; i++) {
                         int px = steps ? x0 + (tx - x0) * i / steps : tx;
                         int py = steps ? y0 + (ty - y0) * i / steps : ty;
-                        grid[py][px] = mode;
+                        drawing.pixels[py][px] = mode;
                     }
                     last_x = tx;
                     last_y = ty;
@@ -65,19 +65,17 @@ Drawing paint(void) {
 
                 for (int y = 0; y < N; y++)
                     for (int x = 0; x < N; x++)
-                        fill(x * 2, y, 2, 1, grid[y][x] ? white : black);
+                        fill(x * 2, y, 2, 1, drawing.pixels[y][x] ? white : black);
             }
             if (button("Clear", 1, ~1, A, A, ui))
-                memset(grid, 0, sizeof(grid));
+                for (int i = 0; i < N; i++)
+                    for (int j = 0; j < N; j++)
+                        drawing.pixels[i][j] = false;
             if (button("Quit", ~1, ~1, A, A, ui))
                 tui_quit();
         }
         if (is_key_press('q'))
             tui_quit();
     }
-    Drawing img = {0};
-    for (int y = 0; y < 16; y++)
-        for (int x = 0; x < 16; x++)
-            img.pixels[y][x] = grid[y][x] ? 1 : 0;
-    return img;
+    return drawing;
 }
