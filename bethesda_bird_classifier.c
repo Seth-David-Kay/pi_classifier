@@ -5,7 +5,8 @@
  * Carolina Chickadee, Tufted Titmouse, Blue Jay, Carolina Wren, Mourning Dove,
  * American Crow, Northern Mockingbird, House Sparrow.
  *
- * Architecture: 512 inputs -> 128 (ReLU) -> 64 (ReLU) -> 10 (softmax), trained with
+ * Architecture: 512 inputs -> 128 (ReLU) -> 64 (ReLU) -> one softmax output per target bird
+ * plus a final "No target bird" class, trained with
  * cross-entropy loss, minibatch SGD with momentum, and He-initialized weights.
  * The 512 inputs are a 32 mel-band x 16 time-bin log-mel spectrogram of a 3 second segment.
  *
@@ -15,6 +16,11 @@
  * Each MP3 is decoded in-process with minimp3, mixed to mono, and resampled to 16 kHz.
  * It is cut into up to four 3 second segments, each run through a Hann-windowed 512-point
  * FFT, a triangular mel filterbank, log(1 + x), and pooled in time to the 32x16 grid.
+ * The "No target bird" class is trained on the audio files listed (one path per line) in
+ * data/none.txt, such as wind, traffic, speech, or non-target species. If none are supplied,
+ * training prints a notice and proceeds with that class never appearing as a target.
+ * At inference, a prediction of that class, or a top probability below MIN_CONFIDENCE, is
+ * reported as "likely none of the target birds".
  * Clips (not segments) are split 60/20/20 into train/validation/test so no clip leaks across sets.
  *
  * Memory: everything allocates from one base-library Arena; temporary work is rolled back
@@ -41,7 +47,10 @@
 #define IN (NMEL * TBINS)
 #define H1 128
 #define H2 64
-#define OUT 4 // number of birbs
+#define NUM_BIRDS 4 // number of birbs
+#define OUT (NUM_BIRDS + 1)
+#define NONE_CLASS NUM_BIRDS
+#define NONE_NAME "No target bird"
 #define NPARAMS (H1 * IN + H1 + H2 * H1 + H2 + OUT * H2 + OUT)
 #define CLIPS_PER_SPECIES 6
 #define API_PER_PAGE 100
@@ -49,6 +58,8 @@
 #define SEED 42
 #define MODEL_PATH "bird_model.bin"
 #define MANIFEST_PATH "data/manifest.txt"
+#define NONE_LIST_PATH "data/none.txt"
+#define MIN_CONFIDENCE 0.5f
 
 structdef(Bird) { String name, genus, epithet; };
 structdef_end(Bird)
@@ -98,7 +109,7 @@ static Audio load_audio(Arena *arena, char *path);
 
 // Builds the list of the target species with their scientific names.
 static Array_Bird make_birds(Arena *arena) {
-    const char *rows[OUT][3] = {
+    const char *rows[NUM_BIRDS][3] = {
         {"American Robin", "Turdus", "migratorius"},
         {"Northern Cardinal", "Cardinalis", "cardinalis"},
         {"Carolina Chickadee", "Poecile", "carolinensis"},
@@ -112,7 +123,7 @@ static Array_Bird make_birds(Arena *arena) {
     };
     Array_Bird birds = {0};
     birds.arena = arena;
-    for (i32 i = 0; i < OUT; i++) {
+    for (i32 i = 0; i < NUM_BIRDS; i++) {
         Bird b = {string_from_cstr(rows[i][0]), string_from_cstr(rows[i][1]), string_from_cstr(rows[i][2])};
         array_push(&birds, b);
     }
@@ -509,12 +520,26 @@ static Dataset ds_push(Dataset d, f32 *feat, i32 y, i32 clip) {
     return d;
 }
 
-// Loads every clip in the manifest, extracts features per segment, and labels them via a species hash map.
+// Appends every segment of a clip to the dataset with the given label and per-class clip id.
+static Dataset add_audio(Arena *arena, Mel mel, Dataset ds, Audio a, i32 label, i32 clip_id) {
+    i32 segs = count_segments(a.n);
+    for (i32 g = 0; g < segs; g++) ds = ds_push(ds, segment_features(arena, mel, a, g), label, clip_id);
+    return ds;
+}
+
+// Loads every manifest clip (labeled by species hash map) plus the clips listed in data/none.txt, extracting features per segment.
 static Dataset build_dataset(Arena *arena, Mel mel, Array_Bird birds) {
     String text;
     if (!file_read_all(arena, MANIFEST_PATH, &text)) return (Dataset){0};
     Array_String lines = string_split(arena, string_trim(text), '\n');
-    Dataset ds = ds_alloc(arena, (i32)lines.count * MAX_SEGS + 1);
+    Array_String nones = {0};
+    String extra;
+    if (file_read_all(arena, NONE_LIST_PATH, &extra)) {
+        nones = string_split(arena, string_trim(extra), '\n');
+    } else if (file_write_all(NONE_LIST_PATH, string_from_cstr(""))) {
+        print("Created empty " NONE_LIST_PATH "; list one non-bird audio file path per line to train the 'No target bird' class.\n");
+    }
+    Dataset ds = ds_alloc(arena, (i32)(lines.count + nones.count) * MAX_SEGS + 1);
 
     HashMap_String_u64 labels;
     HashMap_String_u64_init(&labels, arena);
@@ -525,21 +550,43 @@ static Dataset build_dataset(Arena *arena, Mel mel, Array_Bird birds) {
         ArenaMark mark = arena_mark(arena);
         Array_String parts = string_split(arena, string_trim(lines.data[i]), ' ');
         u64 label = 0;
-        if (parts.count == 2 && HashMap_String_u64_get(&labels, parts.data[0], &label)) {
-            Audio a = load_audio(arena, cstr(arena, parts.data[1]));
-            i32 segs = count_segments(a.n);
-            if (segs == 0) println_string(string_format(arena, "  skipped (could not decode): %s", cstr(arena, parts.data[1])));
-            for (i32 g = 0; g < segs; g++) {
-                ds = ds_push(ds, segment_features(arena, mel, a, g), (i32)label, per_class_clips[label]);
-                per_class[label]++;
-            }
+        if (parts.count >= 2 && HashMap_String_u64_get(&labels, parts.data[0], &label)) {
+            String clip_path = parts.data[parts.count - 1];
+            Audio a = load_audio(arena, cstr(arena, clip_path));
+            i32 before = ds.n;
+            ds = add_audio(arena, mel, ds, a, (i32)label, per_class_clips[label]);
+            i32 segs = ds.n - before;
+            if (segs == 0) println_string(string_format(arena, "  skipped (could not decode): %s", cstr(arena, clip_path)));
+            per_class[label] += segs;
             if (segs > 0) {
                 per_class_clips[label]++;
                 clip++;
             }
+        } else if (string_trim(lines.data[i]).count > 0) {
+            println_string(string_format(arena, "  skipped manifest line (unknown species or bad format): %s", cstr(arena, lines.data[i])));
         }
         arena_pop_to(arena, mark);
     }
+
+    for (u64 i = 0; i < nones.count; i++) {
+        if (string_trim(nones.data[i]).count == 0) continue;
+        ArenaMark mark = arena_mark(arena);
+        char *path = cstr(arena, string_trim(nones.data[i]));
+        Audio a = load_audio(arena, path);
+        i32 before = ds.n;
+        ds = add_audio(arena, mel, ds, a, NONE_CLASS, per_class_clips[NONE_CLASS]);
+        i32 segs = ds.n - before;
+        if (segs == 0) {
+            println_string(string_format(arena, "  skipped (could not decode): %s", path));
+        } else {
+            per_class[NONE_CLASS] += segs;
+            per_class_clips[NONE_CLASS]++;
+            clip++;
+        }
+        arena_pop_to(arena, mark);
+    }
+    if (per_class_clips[NONE_CLASS] == 0)
+        print("No usable clips in " NONE_LIST_PATH "; training without examples of the 'No target bird' class.\n");
 
     print("Loaded % segments from % clips\n", fmt(int, ds.n), fmt(int, clip));
     for (u64 i = 0; i < birds.count; i++) {
@@ -547,6 +594,7 @@ static Dataset build_dataset(Arena *arena, Mel mel, Array_Bird birds) {
         println_string(string_format(arena, "  %-22s %d", cstr(arena, birds.data[i].name), (int)per_class[i]));
         arena_pop_to(arena, mark);
     }
+    println_string(string_format(arena, "  %-22s %d", NONE_NAME, (int)per_class[NONE_CLASS]));
     return ds;
 }
 
@@ -774,6 +822,8 @@ static bool save_model(Model *m, Array_Bird birds, char *path) {
         if (i > 0) sb_push(&sb, '\n');
         sb_push_string(&sb, birds.data[i].name);
     }
+    sb_push(&sb, '\n');
+    sb_push_string(&sb, string_from_cstr(NONE_NAME));
     bool ok = file_write_all(path, sb_build(&sb));
     sb_free(&sb);
     return ok;
@@ -829,6 +879,11 @@ static void infer(Arena *arena, Mel mel, Loaded ld, char *path) {
         println_string(string_format(arena, "  %d. %-22s %5.1f%%", (int)(r + 1),
                                      cstr(arena, ld.names.data[best]), avg[best] * 100.0f));
     }
+    i32 top = 0;
+    for (i32 k = 1; k < OUT; k++)
+        if (avg[k] > avg[top]) top = k;
+    if (top == NONE_CLASS || avg[top] < MIN_CONFIDENCE)
+        println_string(string_from_cstr("Likely none of the target birds."));
     arena_pop_to(arena, mark);
 }
 
