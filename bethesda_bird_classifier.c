@@ -43,7 +43,7 @@
 #define H2 64
 #define OUT 4 // number of birbs
 #define NPARAMS (H1 * IN + H1 + H2 * H1 + H2 + OUT * H2 + OUT)
-#define CLIPS_PER_SPECIES 5
+#define CLIPS_PER_SPECIES 6
 #define API_PER_PAGE 100
 #define MAX_PAGES 10
 #define SEED 42
