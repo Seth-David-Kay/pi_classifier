@@ -44,6 +44,8 @@
 #define OUT 4 // number of birbs
 #define NPARAMS (H1 * IN + H1 + H2 * H1 + H2 + OUT * H2 + OUT)
 #define CLIPS_PER_SPECIES 5
+#define API_PER_PAGE 100
+#define MAX_PAGES 10
 #define SEED 42
 #define MODEL_PATH "bird_model.bin"
 #define MANIFEST_PATH "data/manifest.txt"
@@ -92,7 +94,9 @@ typedef struct {
     Array_String names;
 } Loaded;
 
-// Builds the list of the ten target species with their scientific names.
+static Audio load_audio(Arena *arena, char *path);
+
+// Builds the list of the target species with their scientific names.
 static Array_Bird make_birds(Arena *arena) {
     const char *rows[OUT][3] = {
         {"American Robin", "Turdus", "migratorius"},
@@ -138,58 +142,89 @@ static i64 file_size(char *path) {
     return len;
 }
 
-// Downloads one URL to a file with curl, returning true if a plausible file was written.
+// Returns true if the file decodes to at least one usable segment of audio.
+static bool audio_ok(Arena *arena, char *path) {
+    ArenaMark mark = arena_mark(arena);
+    Audio a = load_audio(arena, path);
+    bool ok = a.n >= SEG_LEN / 4;
+    arena_pop_to(arena, mark);
+    return ok;
+}
+
+// Downloads one URL to a file with curl, returning true if a usable file was written.
 static bool fetch_clip(Arena *arena, char *url, char *out_path) {
     ArenaMark mark = arena_mark(arena);
     String cmd = string_format(arena, "curl -s -L -f -o \"%s\" \"%s\"", out_path, url);
-    bool ok = run(arena, cmd) && file_size(out_path) >= 2000;
+    bool ok = run(arena, cmd) && file_size(out_path) >= 2000 && audio_ok(arena, out_path);
     arena_pop_to(arena, mark);
     if (!ok) remove(out_path);
     return ok;
 }
 
-// Queries Xeno-canto for one species, downloads up to CLIPS_PER_SPECIES MP3s, and returns manifest lines.
+// Makes sure path holds usable audio: keeps a good existing file, otherwise downloads it and deletes it if unusable.
+static bool ensure_clip(Arena *arena, char *url, char *path) {
+    if (audio_ok(arena, path)) return true;
+    return fetch_clip(arena, url, path);
+}
+
+// Pages through Xeno-canto results for one species until CLIPS_PER_SPECIES usable clips exist, returning manifest lines.
 static Array_String download_species(Arena *arena, Bird bird, i32 idx, char *key) {
     Array_String lines = {0};
     lines.arena = arena;
-    i32 per_page = CLIPS_PER_SPECIES < 50 ? 50 : CLIPS_PER_SPECIES;
     char *meta = cstr(arena, string_format(arena, "data/meta_%d.json", (int)idx));
-    String cmd = string_format(arena,
-        "curl -s -L -o \"%s\" \"https://xeno-canto.org/api/3/recordings?query=gen:%s+sp:%s+q:A&per_page=%d&key=%s\"",
-        meta, cstr(arena, bird.genus), cstr(arena, bird.epithet), (int)per_page, key);
-    if (!run(arena, cmd)) return lines;
+    u64 num_pages = 1;
 
-    String json;
-    if (!file_read_all(arena, meta, &json)) return lines;
-    cJSON *root = cJSON_ParseWithLength((const char *)json.data, json.count);
-    if (!root) {
-        println_string(string_format(arena, "  could not parse API reply for %s", cstr(arena, bird.name)));
-        return lines;
-    }
-    cJSON *err = cJSON_GetObjectItemCaseSensitive(root, "error");
-    if (cJSON_IsString(err)) println_string(string_format(arena, "  API error: %s", err->valuestring));
+    for (u64 page = 1; page <= num_pages && page <= MAX_PAGES && lines.count < CLIPS_PER_SPECIES; page++) {
+        String cmd = string_format(arena,
+            // Change line below to +q:B widens pool of clips to noiser ones
+            "curl -s -L -o \"%s\" \"https://xeno-canto.org/api/3/recordings?query=gen:%s+sp:%s+q:A&per_page=%d&page=%d&key=%s\"",
+            meta, cstr(arena, bird.genus), cstr(arena, bird.epithet), (int)API_PER_PAGE, (int)page, key);
+        if (!run(arena, cmd)) break;
 
-    cJSON *rec;
-    cJSON *recs = cJSON_GetObjectItemCaseSensitive(root, "recordings");
-    cJSON_ArrayForEach(rec, recs) {
-        if (lines.count >= CLIPS_PER_SPECIES) break;
-        cJSON *id = cJSON_GetObjectItemCaseSensitive(rec, "id");
-        cJSON *file = cJSON_GetObjectItemCaseSensitive(rec, "file");
-        if (!cJSON_IsString(id) || !cJSON_IsString(file)) continue;
-        u64 id_num = 0;
-        if (!parse_u64(string_from_cstr(id->valuestring), &id_num)) continue;
-        if (string_find(string_from_cstr(file->valuestring), string_from_cstr("https://xeno-canto.org/")) != 0) continue;
-        if (strpbrk(file->valuestring, "\"`$\\ ")) continue;
-        char *path = cstr(arena, string_format(arena, "data/mp3/%d_%llu.mp3", (int)idx, (unsigned long long)id_num));
-        if (file_size(path) < 2000 && !fetch_clip(arena, file->valuestring, path)) continue;
-        String line = string_format(arena, "%s %s", cstr(arena, bird.epithet), path);
-        array_push(&lines, line);
+        String json;
+        if (!file_read_all(arena, meta, &json)) break;
+        cJSON *root = cJSON_ParseWithLength((const char *)json.data, json.count);
+        if (!root) {
+            println_string(string_format(arena, "  could not parse API reply for %s", cstr(arena, bird.name)));
+            break;
+        }
+        cJSON *err = cJSON_GetObjectItemCaseSensitive(root, "error");
+        if (cJSON_IsString(err)) {
+            println_string(string_format(arena, "  API error: %s", err->valuestring));
+            cJSON_Delete(root);
+            break;
+        }
+
+        cJSON *np = cJSON_GetObjectItemCaseSensitive(root, "numPages");
+        u64 parsed = 0;
+        if (cJSON_IsNumber(np) && np->valueint > 0) num_pages = (u64)np->valueint;
+        else if (cJSON_IsString(np) && parse_u64(string_from_cstr(np->valuestring), &parsed) && parsed > 0) num_pages = parsed;
+
+        cJSON *rec;
+        cJSON *recs = cJSON_GetObjectItemCaseSensitive(root, "recordings");
+        cJSON_ArrayForEach(rec, recs) {
+            if (lines.count >= CLIPS_PER_SPECIES) break;
+            cJSON *id = cJSON_GetObjectItemCaseSensitive(rec, "id");
+            cJSON *file = cJSON_GetObjectItemCaseSensitive(rec, "file");
+            if (!cJSON_IsString(id) || !cJSON_IsString(file)) continue;
+            u64 id_num = 0;
+            if (!parse_u64(string_from_cstr(id->valuestring), &id_num)) continue;
+            if (string_find(string_from_cstr(file->valuestring), string_from_cstr("https://xeno-canto.org/")) != 0) continue;
+            if (strpbrk(file->valuestring, "\"`$\\ ")) continue;
+            char *path = cstr(arena, string_format(arena, "data/mp3/%d_%llu.mp3", (int)idx, (unsigned long long)id_num));
+            if (!ensure_clip(arena, file->valuestring, path)) {
+                println_string(string_format(arena, "  rejected %llu, trying next", (unsigned long long)id_num));
+                continue;
+            }
+            String line = string_format(arena, "%s (%s) %s", cstr(arena, bird.epithet), cstr(arena, bird.name), path);
+            array_push(&lines, line);
+        }
+        cJSON_Delete(root);
     }
-    cJSON_Delete(root);
     return lines;
 }
 
-// Downloads clips for all ten species, skipping files already on disk, and writes the manifest.
+// Downloads usable clips for every target species and writes the manifest only if at least one clip was found.
 static bool download_all_data(Arena *arena, Array_Bird birds) {
     if (!run(arena, string_from_cstr("command -v curl > /dev/null 2>&1"))) {
         println_string(string_from_cstr("curl was not found on PATH; install it to download data."));
@@ -204,14 +239,21 @@ static bool download_all_data(Arena *arena, Array_Bird birds) {
 
     StringBuilder sb;
     sb_init(&sb, 4096);
+    u64 total = 0;
     for (u64 i = 0; i < birds.count; i++) {
         println_string(string_format(arena, "Downloading %s...", cstr(arena, birds.data[i].name)));
         Array_String lines = download_species(arena, birds.data[i], (i32)i, key);
-        println_string(string_format(arena, "  %d clips ready", (int)lines.count));
+        println_string(string_format(arena, "  %d of %d usable clips", (int)lines.count, (int)CLIPS_PER_SPECIES));
+        total += lines.count;
         for (u64 j = 0; j < lines.count; j++) {
             sb_push_string(&sb, lines.data[j]);
             sb_push(&sb, '\n');
         }
+    }
+    if (total == 0) {
+        println_string(string_from_cstr("No clips downloaded; keeping the existing manifest."));
+        sb_free(&sb);
+        return false;
     }
     bool ok = file_write_all(MANIFEST_PATH, sb_build(&sb));
     sb_free(&sb);
@@ -429,7 +471,7 @@ static f32 *extract_features(Arena *arena, Mel mel, f32 *s, i32 valid, i32 total
     mean /= IN;
     for (i32 i = 0; i < IN; i++) out[i] -= mean;
     arena_pop_to(arena, mark);
-    return out;
+    return out; 
 }
 
 // Number of 3 second segments taken from a clip of n samples: min(MAX_SEGS, n / SEG_LEN), at least 1 if n >= SEG_LEN / 4.
@@ -485,8 +527,8 @@ static Dataset build_dataset(Arena *arena, Mel mel, Array_Bird birds) {
         u64 label = 0;
         if (parts.count == 2 && HashMap_String_u64_get(&labels, parts.data[0], &label)) {
             Audio a = load_audio(arena, cstr(arena, parts.data[1]));
-            if (a.n == 0) println_string(string_format(arena, "  skipped (could not decode): %s", cstr(arena, parts.data[1])));
             i32 segs = count_segments(a.n);
+            if (segs == 0) println_string(string_format(arena, "  skipped (could not decode): %s", cstr(arena, parts.data[1])));
             for (i32 g = 0; g < segs; g++) {
                 ds = ds_push(ds, segment_features(arena, mel, a, g), (i32)label, per_class_clips[label]);
                 per_class[label]++;
@@ -558,13 +600,13 @@ static void he_fill(f32 *w, i32 count, i32 n_in, u64 seed) {
     for (i32 i = 0; i < count; i++) w[i] = (f32)rng_normal_f64(&rng, 0.0, sd);
 }
 
-// Allocates a zeroed model, then He-initializes all weight matrices (biases stay 0).
-static Model *init_model(Arena *arena) {
+// Allocates a zeroed model, then He-initializes all weight matrices from the seed (biases stay 0).
+static Model *init_model(Arena *arena, u64 seed) {
     Model *m = arena_make_type(arena, 1, Model);
     memset(m, 0, sizeof(Model));
-    he_fill(m->W1, H1 * IN, IN, 1);
-    he_fill(m->W2, H2 * H1, H1, 2);
-    he_fill(m->W3, OUT * H2, H2, 3);
+    he_fill(m->W1, H1 * IN, IN, seed * 3 + 1);
+    he_fill(m->W2, H2 * H1, H1, seed * 3 + 2);
+    he_fill(m->W3, OUT * H2, H2, seed * 3 + 3);
     return m;
 }
 
@@ -810,12 +852,12 @@ int main(int argc, char **argv) {
             return 1;
         }
         Split sp = split_dataset(&arena, all);
-        print("Train: % segments  Validation: % segments  Test: % segmnets\n", fmt(int, sp.train.n), fmt(int, sp.val.n), fmt(int, sp.test.n));
+        print("Train: % segments  Validation: % segments  Test: % segments\n", fmt(int, sp.train.n), fmt(int, sp.val.n), fmt(int, sp.test.n));
         if (sp.train.n == 0 || sp.val.n == 0 || sp.test.n == 0) {
             print("Not enough data to split; download more clips.\n");
             return 1;
         }
-        Model *m = init_model(&arena);
+        Model *m = init_model(&arena, SEED);
         normalize_dataset(m, sp.train, sp.val, sp.test);
         TIME_BLOCK("training") {
             train(&arena, m, sp.train, sp.val, 60);
