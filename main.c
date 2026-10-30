@@ -1,6 +1,5 @@
-#include "base/base_minimal.h"
+#include "base/base_all.h"
 #include "small_tui/tui.h"
-#include <base/base.h>
 
 // Small nn to identiy bird call signals
 
@@ -11,20 +10,88 @@ structdef(Drawing){
 }; structdef_end(Drawing)
 
 Drawing paint(void);
+void init_nn_files(void);
+void dot(f64**, f64**, int, int, f64**);
+void print_matrix(f64**, int, int);
 
 int main(void){
-    for (int i = 0; i < 1; i++){
-    	Drawing character = paint();
-    	printf("int pixels[%d][%d] = {\n", N, N);
-        for (int y = 0; y < N; y++) {
-            printf("    {");
-            for (int x = 0; x < N; x++)
-                printf("%d%s", character.pixels[y][x] ? 1 : 0, x < N - 1 ? ", " : "");
-            printf("}%s\n", y < N - 1 ? "," : "");
+    f64 a0[] = {1, 2, 3};
+    f64 a1[] = {4, 5, 6};
+    f64* a[] = {a0, a1};
+
+    f64 b0[] = {7, 8};
+    f64 b1[] = {9, 10};
+    f64 b2[] = {11, 12};
+    f64* b[] = {b0, b1, b2};
+
+    f64 r0[2] = {0};
+    f64 r1[2] = {0};
+    f64* result[] = {r0, r1};
+
+    dot(a, b, 2, 2, result);
+
+    print_matrix(a, 2, 3);
+    printf("\n");
+    print_matrix(b, 3, 2);
+    printf("\n");
+    for (int i = 0; i < 2; i++) {
+        for (int j = 0; j < 2; j++)
+            printf("%f ", result[i][j]);
+        printf("\n");
+    }
+    // init_nn_files();
+    // for (int i = 0; i < 1; i++){
+    // 	Drawing character = paint();
+    // 	printf("int pixels[%d][%d] = {\n", N, N);
+    //     for (int y = 0; y < N; y++) {
+    //         printf("    {");
+    //         for (int x = 0; x < N; x++)
+    //             printf("%d%s", character.pixels[y][x] ? 1 : 0, x < N - 1 ? ", " : "");
+    //         printf("}%s\n", y < N - 1 ? "," : "");
+    //     }
+    // }
+}
+
+void print_matrix(f64** matrix, int rows, int cols) {
+    for (int row = 0; row < rows; row++) {
+        for (int col = 0; col < cols; col++)
+            printf("%f ", matrix[row][col]);
+        printf("\n");
+    }
+}
+
+void dot(f64** a, f64** b, int rows, int cols, f64** result) {
+    for (int i = 0; i < rows; i++) {
+        for (int j = 0; j < cols; j++) {
+            f64 count = 0;
+            for (int k = 0; k < cols; k++) {
+                printf("a[%d][%d] b[%d][%d]\n", i,k, k,j);
+                count += a[i][k] * b[k][j];
+            }
+            result[i][j] = count;
+            printf("\n");
         }
     }
 }
 
+void init_nn_files(void) {
+    f64 m[256] = {0};
+    f64 w[26][256] = {{0}};
+    f64 w_nonlinear[128][26] = {{0}};
+    f64 b[26] = {0};
+    discard (m); discard (w); discard (w_nonlinear); discard (b);
+    file_write_all("m.zfx", string_from_cstr("hi1"));
+}
+
+void load_nn(Arena arena, Array_f64 x, Array_f64 w, Array_f64 w_nonlinear, Array_f64 b) {
+    discard (x), discard (w), discard (w_nonlinear), discard (b);
+    String text;
+    f64 n;
+    if (file_read_all(&arena, "/w.zxf", &text)) {
+        Array_String lines = string_split(&arena, string_trim(text), '\n');
+        parse_f64(lines.data[0], &n);
+    }
+}
 
 Drawing paint(void) {
     Drawing drawing = {0};

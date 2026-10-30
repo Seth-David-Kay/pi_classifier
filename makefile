@@ -1,7 +1,7 @@
 CC = clang
 CFLAGS = -Wall -Wextra -Werror -O2
-TARGET = main
-SRC = main.c
+TARGET = birds
+SRC = bethesda_bird_classifier.c
 
 # Default target: compile AND run
 all: run
