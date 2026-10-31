@@ -12,12 +12,14 @@
  *
  * Data: `download` asks the Xeno-canto API v3 (via the curl command, needs XC_API_KEY set)
  * for quality-A recordings of each species, parses the JSON reply with cJSON, and downloads
- * each MP3 into data/mp3/. A manifest (data/manifest.txt) lists "<species epithet> <path>" per clip.
+ * each clip into DATA_DIR/mp3/. A manifest (DATA_DIR/manifest.txt) lists "<species epithet> (<name>) <file name>"
+ * per clip. Every data location derives from the single DATA_DIR define, so the whole data folder can be moved
+ * by changing that one line.
  * Each MP3 is decoded in-process with minimp3, mixed to mono, and resampled to 16 kHz.
  * It is cut into up to four 3 second segments, each run through a Hann-windowed 512-point
  * FFT, a triangular mel filterbank, log(1 + x), and pooled in time to the 32x16 grid.
  * The "No target bird" class is trained on the audio files listed (one path per line) in
- * data/none.txt, such as wind, traffic, speech, or non-target species. If none are supplied,
+ * DATA_DIR/none.txt, such as wind, traffic, speech, or non-target species. If none are supplied,
  * training prints a notice and proceeds with that class never appearing as a target.
  * At inference, a prediction of that class, or a top probability below MIN_CONFIDENCE, is
  * reported as "likely none of the target birds".
@@ -47,18 +49,20 @@
 #define IN (NMEL * TBINS)
 #define H1 128
 #define H2 64
-#define NUM_BIRDS 4 // number of birbs
+#define NUM_BIRDS 10 // number of birbs
 #define OUT (NUM_BIRDS + 1)
 #define NONE_CLASS NUM_BIRDS
 #define NONE_NAME "No target bird"
 #define NPARAMS (H1 * IN + H1 + H2 * H1 + H2 + OUT * H2 + OUT)
-#define CLIPS_PER_SPECIES 6
+#define CLIPS_PER_SPECIES 50
 #define API_PER_PAGE 100
 #define MAX_PAGES 10
 #define SEED 42
 #define MODEL_PATH "bird_model.bin"
-#define MANIFEST_PATH "data/manifest.txt"
-#define NONE_LIST_PATH "data/none.txt"
+#define DATA_DIR "/Volumes/Main Disc/Code/Bird Classifier Oct 30 2026"
+#define MP3_DIR DATA_DIR "/mp3"
+#define MANIFEST_PATH DATA_DIR "/manifest.txt"
+#define NONE_LIST_PATH DATA_DIR "/none.txt"
 #define MIN_CONFIDENCE 0.5f
 
 structdef(Bird) { String name, genus, epithet; };
@@ -113,12 +117,12 @@ static Array_Bird make_birds(Arena *arena) {
         {"American Robin", "Turdus", "migratorius"},
         {"Northern Cardinal", "Cardinalis", "cardinalis"},
         {"Carolina Chickadee", "Poecile", "carolinensis"},
-        // {"Tufted Titmouse", "Baeolophus", "bicolor"},
-        // {"Blue Jay", "Cyanocitta", "cristata"},
-        // {"Carolina Wren", "Thryothorus", "ludovicianus"},
-        // {"Mourning Dove", "Zenaida", "macroura"},
-        // {"American Crow", "Corvus", "brachyrhynchos"},
-        // {"Northern Mockingbird", "Mimus", "polyglottos"},
+        {"Tufted Titmouse", "Baeolophus", "bicolor"},
+        {"Blue Jay", "Cyanocitta", "cristata"},
+        {"Carolina Wren", "Thryothorus", "ludovicianus"},
+        {"Mourning Dove", "Zenaida", "macroura"},
+        {"American Crow", "Corvus", "brachyrhynchos"},
+        {"Northern Mockingbird", "Mimus", "polyglottos"},
         {"House Sparrow", "Passer", "domesticus"}
     };
     Array_Bird birds = {0};
@@ -182,7 +186,7 @@ static bool ensure_clip(Arena *arena, char *url, char *path) {
 static Array_String download_species(Arena *arena, Bird bird, i32 idx, char *key) {
     Array_String lines = {0};
     lines.arena = arena;
-    char *meta = cstr(arena, string_format(arena, "data/meta_%d.json", (int)idx));
+    char *meta = cstr(arena, string_format(arena, DATA_DIR "/meta_%d.json", (int)idx));
     u64 num_pages = 1;
 
     for (u64 page = 1; page <= num_pages && page <= MAX_PAGES && lines.count < CLIPS_PER_SPECIES; page++) {
@@ -222,12 +226,13 @@ static Array_String download_species(Arena *arena, Bird bird, i32 idx, char *key
             if (!parse_u64(string_from_cstr(id->valuestring), &id_num)) continue;
             if (string_find(string_from_cstr(file->valuestring), string_from_cstr("https://xeno-canto.org/")) != 0) continue;
             if (strpbrk(file->valuestring, "\"`$\\ ")) continue;
-            char *path = cstr(arena, string_format(arena, "data/mp3/%d_%llu.mp3", (int)idx, (unsigned long long)id_num));
+            char *name = cstr(arena, string_format(arena, "%d_%llu.mp3", (int)idx, (unsigned long long)id_num));
+            char *path = cstr(arena, string_format(arena, MP3_DIR "/%s", name));
             if (!ensure_clip(arena, file->valuestring, path)) {
                 println_string(string_format(arena, "  rejected %llu, trying next", (unsigned long long)id_num));
                 continue;
             }
-            String line = string_format(arena, "%s (%s) %s", cstr(arena, bird.epithet), cstr(arena, bird.name), path);
+            String line = string_format(arena, "%s (%s) %s", cstr(arena, bird.epithet), cstr(arena, bird.name), name);
             array_push(&lines, line);
         }
         cJSON_Delete(root);
@@ -246,7 +251,7 @@ static bool download_all_data(Arena *arena, Array_Bird birds) {
         println_string(string_from_cstr("Set XC_API_KEY to your Xeno-canto API key (https://xeno-canto.org/account)."));
         return false;
     }
-    if (!run(arena, string_from_cstr("mkdir -p data/mp3"))) return false;
+    if (!run(arena, string_from_cstr("mkdir -p \"" MP3_DIR "\""))) return false;
 
     StringBuilder sb;
     sb_init(&sb, 4096);
@@ -551,12 +556,14 @@ static Dataset build_dataset(Arena *arena, Mel mel, Array_Bird birds) {
         Array_String parts = string_split(arena, string_trim(lines.data[i]), ' ');
         u64 label = 0;
         if (parts.count >= 2 && HashMap_String_u64_get(&labels, parts.data[0], &label)) {
-            String clip_path = parts.data[parts.count - 1];
-            Audio a = load_audio(arena, cstr(arena, clip_path));
+            char *raw = cstr(arena, parts.data[parts.count - 1]);
+            char *base = strrchr(raw, '/');
+            char *clip_path = cstr(arena, string_format(arena, MP3_DIR "/%s", base ? base + 1 : raw));
+            Audio a = load_audio(arena, clip_path);
             i32 before = ds.n;
             ds = add_audio(arena, mel, ds, a, (i32)label, per_class_clips[label]);
             i32 segs = ds.n - before;
-            if (segs == 0) println_string(string_format(arena, "  skipped (could not decode): %s", cstr(arena, clip_path)));
+            if (segs == 0) println_string(string_format(arena, "  skipped (could not decode): %s", clip_path));
             per_class[label] += segs;
             if (segs > 0) {
                 per_class_clips[label]++;
