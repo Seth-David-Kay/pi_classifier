@@ -59,7 +59,7 @@
 #define MAX_PAGES 10
 #define SEED 42
 #define MODEL_PATH "bird_model.bin"
-#define DATA_DIR "/Volumes/Main Disc/Code/Bird Classifier Oct 30 2026"
+#define DATA_DIR "/data"
 #define MP3_DIR DATA_DIR "/mp3"
 #define MANIFEST_PATH DATA_DIR "/manifest.txt"
 #define NONE_LIST_PATH DATA_DIR "/none.txt"
