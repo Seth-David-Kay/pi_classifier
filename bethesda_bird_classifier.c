@@ -49,17 +49,17 @@
 #define IN (NMEL * TBINS)
 #define H1 128
 #define H2 64
-#define NUM_BIRDS 10 // number of birbs
+#define NUM_BIRDS 1 // number of birbs
 #define OUT (NUM_BIRDS + 1)
 #define NONE_CLASS NUM_BIRDS
 #define NONE_NAME "No target bird"
 #define NPARAMS (H1 * IN + H1 + H2 * H1 + H2 + OUT * H2 + OUT)
-#define CLIPS_PER_SPECIES 50
+#define CLIPS_PER_SPECIES 6
 #define API_PER_PAGE 100
 #define MAX_PAGES 10
 #define SEED 42
 #define MODEL_PATH "bird_model.bin"
-#define DATA_DIR "/data"
+#define DATA_DIR "data"
 #define MP3_DIR DATA_DIR "/mp3"
 #define MANIFEST_PATH DATA_DIR "/manifest.txt"
 #define NONE_LIST_PATH DATA_DIR "/none.txt"
@@ -115,15 +115,15 @@ static Audio load_audio(Arena *arena, char *path);
 static Array_Bird make_birds(Arena *arena) {
     const char *rows[NUM_BIRDS][3] = {
         {"American Robin", "Turdus", "migratorius"},
-        {"Northern Cardinal", "Cardinalis", "cardinalis"},
-        {"Carolina Chickadee", "Poecile", "carolinensis"},
-        {"Tufted Titmouse", "Baeolophus", "bicolor"},
-        {"Blue Jay", "Cyanocitta", "cristata"},
-        {"Carolina Wren", "Thryothorus", "ludovicianus"},
-        {"Mourning Dove", "Zenaida", "macroura"},
-        {"American Crow", "Corvus", "brachyrhynchos"},
-        {"Northern Mockingbird", "Mimus", "polyglottos"},
-        {"House Sparrow", "Passer", "domesticus"}
+        // {"Northern Cardinal", "Cardinalis", "cardinalis"},
+        // {"Carolina Chickadee", "Poecile", "carolinensis"},
+        // {"Tufted Titmouse", "Baeolophus", "bicolor"},
+        // {"Blue Jay", "Cyanocitta", "cristata"},
+        // {"Carolina Wren", "Thryothorus", "ludovicianus"},
+        // {"Mourning Dove", "Zenaida", "macroura"},
+        // {"American Crow", "Corvus", "brachyrhynchos"},
+        // {"Northern Mockingbird", "Mimus", "polyglottos"},
+        // {"House Sparrow", "Passer", "domesticus"}
     };
     Array_Bird birds = {0};
     birds.arena = arena;
@@ -134,17 +134,9 @@ static Array_Bird make_birds(Arena *arena) {
     return birds;
 }
 
-// Copies a String into a NUL-terminated C string allocated from the arena.
-static char *cstr(Arena *arena, String s) {
-    char *out = arena_make_type(arena, s.count + 1, char);
-    memcpy(out, s.data, s.count);
-    out[s.count] = 0;
-    return out;
-}
-
 // Runs a shell command and returns true if it exited with status 0.
 static bool run(Arena *arena, String cmd) {
-    return system(cstr(arena, cmd)) == 0;
+    return system(string_to_cstr(arena, cmd)) == 0;
 }
 
 // Returns the size of a file in bytes, or -1 if it does not exist.
@@ -186,21 +178,21 @@ static bool ensure_clip(Arena *arena, char *url, char *path) {
 static Array_String download_species(Arena *arena, Bird bird, i32 idx, char *key) {
     Array_String lines = {0};
     lines.arena = arena;
-    char *meta = cstr(arena, string_format(arena, DATA_DIR "/meta_%d.json", (int)idx));
+    char *meta = string_to_cstr(arena, string_format(arena, DATA_DIR "/meta_%d.json", (int)idx));
     u64 num_pages = 1;
 
     for (u64 page = 1; page <= num_pages && page <= MAX_PAGES && lines.count < CLIPS_PER_SPECIES; page++) {
         String cmd = string_format(arena,
             // Change line below to +q:B widens pool of clips to noiser ones
             "curl -s -L -o \"%s\" \"https://xeno-canto.org/api/3/recordings?query=gen:%s+sp:%s+q:A&per_page=%d&page=%d&key=%s\"",
-            meta, cstr(arena, bird.genus), cstr(arena, bird.epithet), (int)API_PER_PAGE, (int)page, key);
+            meta, string_to_cstr(arena, bird.genus), string_to_cstr(arena, bird.epithet), (int)API_PER_PAGE, (int)page, key);
         if (!run(arena, cmd)) break;
 
         String json;
         if (!file_read_all(arena, meta, &json)) break;
         cJSON *root = cJSON_ParseWithLength((const char *)json.data, json.count);
         if (!root) {
-            println_string(string_format(arena, "  could not parse API reply for %s", cstr(arena, bird.name)));
+            println_string(string_format(arena, "  could not parse API reply for %s", string_to_cstr(arena, bird.name)));
             break;
         }
         cJSON *err = cJSON_GetObjectItemCaseSensitive(root, "error");
@@ -226,13 +218,13 @@ static Array_String download_species(Arena *arena, Bird bird, i32 idx, char *key
             if (!parse_u64(string_from_cstr(id->valuestring), &id_num)) continue;
             if (string_find(string_from_cstr(file->valuestring), string_from_cstr("https://xeno-canto.org/")) != 0) continue;
             if (strpbrk(file->valuestring, "\"`$\\ ")) continue;
-            char *name = cstr(arena, string_format(arena, "%d_%llu.mp3", (int)idx, (unsigned long long)id_num));
-            char *path = cstr(arena, string_format(arena, MP3_DIR "/%s", name));
+            char *name = string_to_cstr(arena, string_format(arena, "%d_%llu.mp3", (int)idx, (unsigned long long)id_num));
+            char *path = string_to_cstr(arena, string_format(arena, MP3_DIR "/%s", name));
             if (!ensure_clip(arena, file->valuestring, path)) {
                 println_string(string_format(arena, "  rejected %llu, trying next", (unsigned long long)id_num));
                 continue;
             }
-            String line = string_format(arena, "%s (%s) %s", cstr(arena, bird.epithet), cstr(arena, bird.name), name);
+            String line = string_format(arena, "%s (%s) %s", string_to_cstr(arena, bird.epithet), string_to_cstr(arena, bird.name), name);
             array_push(&lines, line);
         }
         cJSON_Delete(root);
@@ -257,7 +249,7 @@ static bool download_all_data(Arena *arena, Array_Bird birds) {
     sb_init(&sb, 4096);
     u64 total = 0;
     for (u64 i = 0; i < birds.count; i++) {
-        println_string(string_format(arena, "Downloading %s...", cstr(arena, birds.data[i].name)));
+        println_string(string_format(arena, "Downloading %s...", string_to_cstr(arena, birds.data[i].name)));
         Array_String lines = download_species(arena, birds.data[i], (i32)i, key);
         println_string(string_format(arena, "  %d of %d usable clips", (int)lines.count, (int)CLIPS_PER_SPECIES));
         total += lines.count;
@@ -556,9 +548,9 @@ static Dataset build_dataset(Arena *arena, Mel mel, Array_Bird birds) {
         Array_String parts = string_split(arena, string_trim(lines.data[i]), ' ');
         u64 label = 0;
         if (parts.count >= 2 && HashMap_String_u64_get(&labels, parts.data[0], &label)) {
-            char *raw = cstr(arena, parts.data[parts.count - 1]);
+            char *raw = string_to_cstr(arena, parts.data[parts.count - 1]);
             char *base = strrchr(raw, '/');
-            char *clip_path = cstr(arena, string_format(arena, MP3_DIR "/%s", base ? base + 1 : raw));
+            char *clip_path = string_to_cstr(arena, string_format(arena, MP3_DIR "/%s", base ? base + 1 : raw));
             Audio a = load_audio(arena, clip_path);
             i32 before = ds.n;
             ds = add_audio(arena, mel, ds, a, (i32)label, per_class_clips[label]);
@@ -570,7 +562,7 @@ static Dataset build_dataset(Arena *arena, Mel mel, Array_Bird birds) {
                 clip++;
             }
         } else if (string_trim(lines.data[i]).count > 0) {
-            println_string(string_format(arena, "  skipped manifest line (unknown species or bad format): %s", cstr(arena, lines.data[i])));
+            println_string(string_format(arena, "  skipped manifest line (unknown species or bad format): %s", string_to_cstr(arena, lines.data[i])));
         }
         arena_pop_to(arena, mark);
     }
@@ -578,7 +570,7 @@ static Dataset build_dataset(Arena *arena, Mel mel, Array_Bird birds) {
     for (u64 i = 0; i < nones.count; i++) {
         if (string_trim(nones.data[i]).count == 0) continue;
         ArenaMark mark = arena_mark(arena);
-        char *path = cstr(arena, string_trim(nones.data[i]));
+        char *path = string_to_cstr(arena, string_trim(nones.data[i]));
         Audio a = load_audio(arena, path);
         i32 before = ds.n;
         ds = add_audio(arena, mel, ds, a, NONE_CLASS, per_class_clips[NONE_CLASS]);
@@ -598,7 +590,7 @@ static Dataset build_dataset(Arena *arena, Mel mel, Array_Bird birds) {
     print("Loaded % segments from % clips\n", fmt(int, ds.n), fmt(int, clip));
     for (u64 i = 0; i < birds.count; i++) {
         ArenaMark mark = arena_mark(arena);
-        println_string(string_format(arena, "  %-22s %d", cstr(arena, birds.data[i].name), (int)per_class[i]));
+        println_string(string_format(arena, "  %-22s %d", string_to_cstr(arena, birds.data[i].name), (int)per_class[i]));
         arena_pop_to(arena, mark);
     }
     println_string(string_format(arena, "  %-22s %d", NONE_NAME, (int)per_class[NONE_CLASS]));
@@ -884,7 +876,7 @@ static void infer(Arena *arena, Mel mel, Loaded ld, char *path) {
             if (!used[k] && (best < 0 || avg[k] > avg[best])) best = k;
         used[best] = true;
         println_string(string_format(arena, "  %d. %-22s %5.1f%%", (int)(r + 1),
-                                     cstr(arena, ld.names.data[best]), avg[best] * 100.0f));
+                                     string_to_cstr(arena, ld.names.data[best]), avg[best] * 100.0f));
     }
     i32 top = 0;
     for (i32 k = 1; k < OUT; k++)
