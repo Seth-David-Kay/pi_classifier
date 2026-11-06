@@ -479,7 +479,7 @@ static f32 *extract_features(Arena *arena, Mel mel, f32 *s, i32 valid, i32 total
     mean /= IN;
     for (i32 i = 0; i < IN; i++) out[i] -= mean;
     arena_pop_to(arena, mark);
-    return out; 
+    return out;
 }
 
 // Number of 3 second segments taken from a clip of n samples: min(MAX_SEGS, n / SEG_LEN), at least 1 if n >= SEG_LEN / 4.
@@ -651,6 +651,7 @@ static void he_fill(f32 *w, i32 count, i32 n_in, u64 seed) {
 static Model *init_model(Arena *arena, u64 seed) {
     Model *m = arena_make_type(arena, 1, Model);
     memset(m, 0, sizeof(Model));
+    print(m->)
     he_fill(m->W1, H1 * IN, IN, seed * 3 + 1);
     he_fill(m->W2, H2 * H1, H1, seed * 3 + 2);
     he_fill(m->W3, OUT * H2, H2, seed * 3 + 3);
@@ -917,7 +918,7 @@ int main(int argc, char **argv) {
             train(&arena, m, sp.train, sp.val, 60);
         }
         Eval te = evaluate(m, sp.test);
-        println_string(string_format(&arena, "Test accuracy: %.1f%% (loss %.4f, %d segments)", 
+        println_string(string_format(&arena, "Test accuracy: %.1f%% (loss %.4f, %d segments)",
             te.acc * 100.0f, te.loss, (int)sp.test.n));
         if (!save_model(m, birds, MODEL_PATH)) {
             print("Could not write the model file.\n");
