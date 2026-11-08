@@ -651,7 +651,6 @@ static void he_fill(f32 *w, i32 count, i32 n_in, u64 seed) {
 static Model *init_model(Arena *arena, u64 seed) {
     Model *m = arena_make_type(arena, 1, Model);
     memset(m, 0, sizeof(Model));
-    print(m->)
     he_fill(m->W1, H1 * IN, IN, seed * 3 + 1);
     he_fill(m->W2, H2 * H1, H1, seed * 3 + 2);
     he_fill(m->W3, OUT * H2, H2, seed * 3 + 3);
