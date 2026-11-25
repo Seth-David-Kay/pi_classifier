@@ -72,10 +72,6 @@ or
 ./birds download
 ```
 
-```bash
-[example command]
-```
-
 ## Roadmap
 
 ## Notes
