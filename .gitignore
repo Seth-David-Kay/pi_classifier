@@ -2,6 +2,11 @@ rad.out
 .DS_Store
 .envrc
 data/*
+.DS_Store
+logs
+*.log
+.envrc
+.env
 
 # Prerequisites
 *.d
